@@ -12,8 +12,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.alexprestes.dashcamviewer.domain.usecase.ListVolumesWithDashcamVideoCountUseCase
 import com.alexprestes.dashcamviewer.ui.permission.PermissionScreen
+import com.alexprestes.dashcamviewer.ui.player.PlayerScreen
 import com.alexprestes.dashcamviewer.ui.theme.DashcamViewerTheme
 import com.alexprestes.dashcamviewer.ui.volume.VolumeScreen
 import com.alexprestes.dashcamviewer.ui.volume.VolumeUiState
@@ -48,21 +54,35 @@ class MainActivity : ComponentActivity() {
                 if (!permissionGranted) {
                     PermissionScreen(onRequestPermission = { requestStoragePermission() })
                 } else {
-                    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-                    when (val state = uiState) {
-                        is VolumeUiState.Loading -> {
-                            // TODO: Show a loading indicator
-                        }
-                        is VolumeUiState.Success -> {
-                            VolumeScreen(
-                                volumes = state.volumes,
-                                onVolumeSelected = {
-                                    // TODO: Navigate to Player Screen
+                    val navController = rememberNavController()
+                    NavHost(navController = navController, startDestination = "volumeList") {
+                        composable("volumeList") {
+                            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                            when (val state = uiState) {
+                                is VolumeUiState.Loading -> {
+                                    // TODO: Show a loading indicator
                                 }
-                            )
+
+                                is VolumeUiState.Success -> {
+                                    VolumeScreen(
+                                        volumes = state.volumes,
+                                        onVolumeSelected = { volume ->
+                                            navController.navigate("player/${volume.name}")
+                                        }
+                                    )
+                                }
+
+                                is VolumeUiState.Error -> {
+                                    // TODO: Show an error message
+                                }
+                            }
                         }
-                        is VolumeUiState.Error -> {
-                            // TODO: Show an error message
+                        composable(
+                            "player/{volumeName}",
+                            arguments = listOf(navArgument("volumeName") { type = NavType.StringType })
+                        ) { backStackEntry ->
+                            val volumeName = backStackEntry.arguments?.getString("volumeName")
+                            PlayerScreen(volumeName = volumeName)
                         }
                     }
                 }
