@@ -1,16 +1,18 @@
 package com.alexprestes.dashcamviewer.data.repository
 
+import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.alexprestes.dashcamviewer.domain.model.CameraType
 import com.alexprestes.dashcamviewer.domain.model.VideoFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
 
 object VideoRepository {
 
@@ -28,7 +30,7 @@ object VideoRepository {
      * Esta função é uma "suspend function", o que significa que deve ser chamada de uma coroutine.
      * Ela executa a operação de I/O de arquivos em uma thread de fundo (Dispatchers.IO).
      */
-    suspend fun loadVideosFrom(root: DocumentFile): List<VideoFile> = withContext(Dispatchers.IO) {
+    suspend fun loadVideosFrom(context: Context, root: DocumentFile): List<VideoFile> = withContext(Dispatchers.IO) {
         val videos = mutableListOf<VideoFile>()
 
         for (path in VIDEO_PATHS) {
@@ -45,6 +47,8 @@ object VideoRepository {
                     return@forEach
                 }
 
+                val duration = getVideoDuration(context, file)
+
                 val (localTimestamp, cameraType) = parsedInfo
                 val zonedDateTime = localTimestamp.atZone(ZoneId.systemDefault())
 
@@ -54,7 +58,8 @@ object VideoRepository {
                         name = name,
                         timestamp = zonedDateTime,
                         cameraType = cameraType,
-                        isEvent = isEvent
+                        isEvent = isEvent,
+                        duration = duration // Usando a duração real
                     )
                 )
             }
@@ -67,6 +72,22 @@ object VideoRepository {
      * Analisa o nome de um arquivo de vídeo.
      * Continua sendo uma função síncrona, pois é rápida e não faz I/O.
      */
+    private fun getVideoDuration(context: Context, file: DocumentFile): Duration {
+        val retriever = MediaMetadataRetriever()
+        try {
+            context.contentResolver.openFileDescriptor(file.uri, "r")?.use { pfd ->
+                retriever.setDataSource(pfd.fileDescriptor)
+                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                return Duration.ofMillis(durationStr?.toLongOrNull() ?: 0L)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get duration for ${file.name}", e)
+        } finally {
+            retriever.release()
+        }
+        return Duration.ZERO // Retorna 0 se falhar
+    }
+
     private fun parseFileName(fileName: String): Pair<LocalDateTime, CameraType>? {
         try {
             val parts = fileName.removeSuffix(".MP4").split('_')

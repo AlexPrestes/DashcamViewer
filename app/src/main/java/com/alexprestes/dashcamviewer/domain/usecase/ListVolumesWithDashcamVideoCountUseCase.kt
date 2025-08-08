@@ -24,7 +24,7 @@ class ListVolumesWithDashcamVideoCountUseCase(private val context: Context) {
             val name = volumeRoot.name.takeIf { !it.isNullOrBlank() } ?: "External Storage"
 
             // Chama a função suspend para construir a timeline.
-            val timeline = buildTimeline(documentFile)
+            val timeline = buildTimeline(context, documentFile)
             val videoCount = timeline.segments.sumOf { it.clips.size }
 
             // Cria a instância final com a contagem correta

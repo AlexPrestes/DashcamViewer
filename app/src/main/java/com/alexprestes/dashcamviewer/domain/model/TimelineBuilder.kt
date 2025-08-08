@@ -1,5 +1,6 @@
 package com.alexprestes.dashcamviewer.domain.model
 
+import android.content.Context
 import androidx.documentfile.provider.DocumentFile
 import com.alexprestes.dashcamviewer.data.repository.VideoRepository
 import kotlinx.coroutines.Dispatchers
@@ -14,21 +15,20 @@ private const val MAX_GAP_SECONDS = 60L
  * Constrói um objeto Timeline a partir de um DocumentFile, de forma assíncrona.
  * Primeiro, carrega os vídeos (I/O), depois processa a lista (CPU).
  */
-suspend fun buildTimeline(documentFile: DocumentFile): Timeline = withContext(Dispatchers.Default) {
-    // 1. Carregar os vídeos (operação de I/O, já tratada no repositório)
-    val allVideos = VideoRepository.loadVideosFrom(documentFile)
+suspend fun buildTimeline(context: Context, documentFile: DocumentFile): Timeline = withContext(Dispatchers.Default) {
+    // Passa o context para o repositório
+    val allVideos = VideoRepository.loadVideosFrom(context, documentFile)
     if (allVideos.isEmpty()) {
         return@withContext Timeline(emptyList(), null, null, Duration.ZERO)
     }
 
-    // 2. Agrupar vídeos frontais (F) e traseiros (I) pelo mesmo timestamp.
     val clipsMap = allVideos.groupBy { it.timestamp }
     val videoClips = clipsMap.mapNotNull { (zonedDateTime, videos) ->
         val frontVideo = videos.find { it.cameraType == CameraType.FRONT }
         if (frontVideo != null) {
             val rearVideo = videos.find { it.cameraType == CameraType.INSIDE }
-            // A duração será ajustada no futuro para usar a duração real do vídeo.
-            VideoClip(frontVideo, rearVideo, zonedDateTime, Duration.ofMinutes(1))
+            // CORREÇÃO APLICADA AQUI: Usando a duração real do arquivo frontal
+            VideoClip(frontVideo, rearVideo, zonedDateTime, frontVideo.duration)
         } else {
             null
         }
@@ -45,9 +45,10 @@ suspend fun buildTimeline(documentFile: DocumentFile): Timeline = withContext(Di
     for (i in 1 until videoClips.size) {
         val prevClip = videoClips[i - 1]
         val currentClip = videoClips[i]
+        // Considera um pequeno buffer de 1 segundo para juntar clipes
         val gap = Duration.between(prevClip.startTime.plus(prevClip.duration), currentClip.startTime)
 
-        if (gap.seconds > MAX_GAP_SECONDS) {
+        if (gap.seconds > 1) { // Se o gap for maior que 1s, cria novo segmento
             segments.add(createSegment(currentSegmentClips))
             currentSegmentClips = mutableListOf(currentClip)
         } else {
@@ -56,10 +57,9 @@ suspend fun buildTimeline(documentFile: DocumentFile): Timeline = withContext(Di
     }
     segments.add(createSegment(currentSegmentClips))
 
-    // 4. Montar o objeto Timeline final.
     val earliest = segments.first().startTime
     val latest = segments.last().endTime
-    val totalDuration = Duration.between(earliest, latest)
+    val totalDuration = segments.fold(Duration.ZERO) { acc, segment -> acc.plus(segment.duration) }
 
     return@withContext Timeline(segments, earliest, latest, totalDuration)
 }
@@ -69,6 +69,7 @@ suspend fun buildTimeline(documentFile: DocumentFile): Timeline = withContext(Di
  */
 private fun createSegment(clips: List<VideoClip>): RecordingSegment {
     val startTime = clips.first().startTime
+    // CORREÇÃO APLICADA AQUI: O fim é o início do último clipe mais a sua duração real
     val endTime = clips.last().startTime.plus(clips.last().duration)
     return RecordingSegment(
         clips = clips,
