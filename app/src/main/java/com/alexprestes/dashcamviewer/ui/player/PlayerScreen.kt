@@ -19,6 +19,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
@@ -33,9 +34,9 @@ import com.kizitonwose.calendar.core.CalendarDay
 import com.kizitonwose.calendar.core.firstDayOfWeekFromLocale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Duration
 import java.time.LocalDate
 import java.time.YearMonth
-import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 
@@ -50,7 +51,7 @@ fun PlayerScreen(
         )
     )
 ) {
-    val uiState by playerViewModel.uiState.collectAsState()
+    val uiState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     var showBottomSheet by remember { mutableStateOf(false) }
@@ -108,7 +109,12 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
     val playbackSpeeds = listOf(0.5f, 1.0f, 2.0f)
     var currentSpeedIndex by remember { mutableStateOf(1) }
 
-    // Lista de vídeos para o dia selecionado, usada para cálculos de posição
+    // --- NOVO ESTADO PARA O ZOOM ---
+    val zoomLevels = listOf(0.5.dp, 8.dp) // Zoom Out (visão ampla) vs Zoom In (visão detalhada)
+    var currentZoomLevelIndex by remember { mutableStateOf(0) }
+    val dpPerSecond = zoomLevels[currentZoomLevelIndex]
+    // --- FIM DO NOVO ESTADO ---
+
     val frontVideos = remember(timeline) {
         timeline.segments.flatMap { it.clips }.map { it.frontVideo }
     }
@@ -119,9 +125,12 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
     val frontPlayer = remember { ExoPlayer.Builder(context).build() }
     val insidePlayer = remember { ExoPlayer.Builder(context).build() }
 
+    var absolutePosition by remember { mutableStateOf(0L) }
+
     LaunchedEffect(timeline) {
         frontPlayer.prepareWithVideos(frontVideos, context)
         insidePlayer.prepareWithVideos(insideVideos, context)
+        frontPlayer.playWhenReady = false // Começa pausado
         isPlaying = false
     }
 
@@ -132,21 +141,16 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         }
     }
 
-    // --- LÓGICA DE POSIÇÃO E SEEK CORRIGIDA ---
-    var absolutePosition by remember { mutableStateOf(0L) }
-
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             var basePosition = 0L
             val currentWindowIndex = frontPlayer.currentMediaItemIndex
 
-            // Soma a duração REAL dos vídeos anteriores na playlist
             for (i in 0 until currentWindowIndex) {
-                // Acessa a duração do objeto VideoFile, que agora deve ser precisa
-                basePosition += frontVideos.getOrNull(i)?.duration?.toMillis() ?: (60 * 1000L) // Fallback para 1 min
+                basePosition += frontVideos.getOrNull(i)?.duration?.toMillis() ?: Duration.ofMinutes(1).toMillis()
             }
             absolutePosition = basePosition + frontPlayer.currentPosition
-            delay(250) // Atualiza 4x por segundo
+            delay(250)
         }
     }
 
@@ -155,15 +159,16 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         var accumulatedDuration = 0L
         var positionInWindow = 0L
 
-        // Encontra em qual vídeo da playlist a posição desejada está, usando a duração real
-        for ((index, video) in frontVideos.withIndex()) {
-            val videoDuration = video.duration.toMillis()
-            if (playlistPosition < accumulatedDuration + videoDuration) {
-                targetWindowIndex = index
-                positionInWindow = playlistPosition - accumulatedDuration
-                break
+        if (frontVideos.isNotEmpty()) {
+            for ((index, video) in frontVideos.withIndex()) {
+                val videoDuration = video.duration.toMillis()
+                if (playlistPosition < accumulatedDuration + videoDuration) {
+                    targetWindowIndex = index
+                    positionInWindow = playlistPosition - accumulatedDuration
+                    break
+                }
+                accumulatedDuration += videoDuration
             }
-            accumulatedDuration += videoDuration
         }
 
         frontPlayer.seekTo(targetWindowIndex, positionInWindow)
@@ -171,7 +176,6 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         absolutePosition = playlistPosition
     }
 
-    // --- FIM DA LÓGICA DE POSIÇÃO E SEEK ---
 
     LaunchedEffect(frontPlayer) {
         frontPlayer.addListener(object : Player.Listener {
@@ -203,19 +207,25 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         TimelineView(
             timeline = timeline,
             currentAbsolutePosition = absolutePosition,
-            onSeek = ::seekPlayers
+            onSeek = { newPosition -> seekPlayers(newPosition) },
+            isPlaying = isPlaying,
+            dpPerSecond = dpPerSecond // Passando o estado
         )
 
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // ... (Botões de controle permanecem os mesmos)
-            IconButton(onClick = { /* TODO */ }) {
+            // Botão de Zoom Out (-)
+            IconButton(onClick = { if(currentZoomLevelIndex > 0) currentZoomLevelIndex-- }) {
+                Icon(Icons.Default.Remove, contentDescription = "Zoom Out")
+            }
+
+            IconButton(onClick = { /* TODO: Implementar gravação */ }) {
                 Icon(Icons.Default.FiberManualRecord, contentDescription = "Record")
             }
-            IconButton(onClick = { /* TODO */ }) {
+            IconButton(onClick = { /* TODO: Implementar screenshot */ }) {
                 Icon(Icons.Default.CameraAlt, contentDescription = "Screenshot")
             }
             IconButton(onClick = {
@@ -224,7 +234,7 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = "Play/Pause",
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(36.dp)
                 )
             }
             IconButton(onClick = { isMuted = !isMuted }) {
@@ -244,11 +254,15 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
             IconButton(onClick = onCalendarClick) {
                 Icon(Icons.Default.CalendarMonth, contentDescription = "Open Calendar")
             }
+
+            // Botão de Zoom In (+)
+            IconButton(onClick = { if(currentZoomLevelIndex < zoomLevels.lastIndex) currentZoomLevelIndex++ }) {
+                Icon(Icons.Default.Add, contentDescription = "Zoom In")
+            }
         }
     }
 }
 
-// ... (O resto do arquivo PlayerScreen.kt, incluindo CalendarSheetContent, Day, etc., permanece o mesmo)
 
 @Composable
 private fun CalendarSheetContent(
@@ -256,15 +270,15 @@ private fun CalendarSheetContent(
     selectedDate: LocalDate,
     onDateSelected: (LocalDate) -> Unit
 ) {
-    val currentMonth = YearMonth.now()
-    val startMonth = remember { currentMonth.minusMonths(100) }
-    val endMonth = remember { currentMonth.plusMonths(100) }
+    val currentMonth = YearMonth.from(selectedDate)
+    val startMonth = remember { currentMonth.minusMonths(24) }
+    val endMonth = remember { currentMonth.plusMonths(24) }
     val firstDayOfWeek = remember { firstDayOfWeekFromLocale() }
 
     val state = rememberCalendarState(
         startMonth = startMonth,
         endMonth = endMonth,
-        firstVisibleMonth = YearMonth.from(selectedDate),
+        firstVisibleMonth = currentMonth,
         firstDayOfWeek = firstDayOfWeek
     )
 
@@ -272,7 +286,7 @@ private fun CalendarSheetContent(
         Text(
             text = "Selecione uma data",
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier.padding(16.dp).align(Alignment.CenterHorizontally)
         )
         VerticalCalendar(
             state = state,
@@ -350,7 +364,6 @@ private fun ExoPlayer.prepareWithVideos(videos: List<VideoFile>, context: Contex
     prepare()
 }
 
-// Factory para injetar parâmetros no ViewModel
 private class PlayerViewModelFactory(
     private val application: android.app.Application,
     private val volumeName: String?

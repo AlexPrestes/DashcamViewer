@@ -3,57 +3,88 @@ package com.alexprestes.dashcamviewer.domain.model
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Duration
-import java.time.LocalDateTime
-import java.time.ZonedDateTime
 
-private const val MAX_GAP_SECONDS = 60L
+private const val MAX_GAP_SECONDS = 1L // Uma tolerância pequena e justa
 
-// --- INÍCIO DA CORREÇÃO ---
-// A função agora recebe a lista de vídeos pronta, em vez de um DocumentFile.
 suspend fun buildTimeline(allVideos: List<VideoFile>): Timeline = withContext(Dispatchers.Default) {
-// --- FIM DA CORREÇÃO ---
 
     if (allVideos.isEmpty()) {
         return@withContext Timeline(emptyList(), null, null, Duration.ZERO)
     }
 
-    val clipsMap = allVideos.groupBy { it.timestamp }
-    val videoClips = clipsMap.mapNotNull { (zonedDateTime, videos) ->
-        val frontVideo = videos.find { it.cameraType == CameraType.FRONT }
-        if (frontVideo != null) {
-            val rearVideo = videos.find { it.cameraType == CameraType.INSIDE }
-            VideoClip(frontVideo, rearVideo, zonedDateTime, Duration.ofMinutes(1))
-        } else {
-            null
-        }
-    }.sortedBy { it.startTime }
+    // 1. Agrupa vídeos por timestamp (Frente e Interna)
+    val initialClips = allVideos.groupBy { it.timestamp }
+        .mapNotNull { (zonedDateTime, videos) ->
+            val frontVideo = videos.find { it.cameraType == CameraType.FRONT }
+            if (frontVideo != null) {
+                val rearVideo = videos.find { it.cameraType == CameraType.INSIDE }
+                VideoClip(frontVideo, rearVideo, zonedDateTime, frontVideo.duration)
+            } else {
+                null
+            }
+        }.sortedBy { it.startTime }
 
-    if (videoClips.isEmpty()) {
+    if (initialClips.isEmpty()) {
         return@withContext Timeline(emptyList(), null, null, Duration.ZERO)
     }
 
-    val segments = mutableListOf<RecordingSegment>()
-    var currentSegmentClips = mutableListOf(videoClips.first())
+    // 2. Garante que cada clipe tenha uma duração válida (LÓGICA CORRIGIDA)
+    val refinedClips = initialClips.mapIndexed { index, clip ->
+        val finalDuration: Duration
 
-    for (i in 1 until videoClips.size) {
-        val prevClip = videoClips[i - 1]
-        val currentClip = videoClips[i]
-        val gap = Duration.between(prevClip.startTime.plus(prevClip.duration), currentClip.startTime)
-
-        if (gap.seconds > MAX_GAP_SECONDS) {
-            segments.add(createSegment(currentSegmentClips))
-            currentSegmentClips = mutableListOf(currentClip)
+        // A REGRA DE OURO: Se a duração lida do arquivo é maior que zero, CONFIE NELA.
+        if (!clip.duration.isZero() && !clip.duration.isNegative) {
+            finalDuration = clip.duration
         } else {
-            currentSegmentClips.add(currentClip)
+            // Se a leitura do metadado falhou (duração é zero), tentamos um fallback inteligente.
+            val nextClip = initialClips.getOrNull(index + 1)
+            if (nextClip != null) {
+                val gapToNext = Duration.between(clip.startTime, nextClip.startTime)
+                // Se o gap for razoável (sugere um clipe padrão de 1 min), usamos ele.
+                if (!gapToNext.isNegative && gapToNext.seconds > 0 && gapToNext.seconds <= 65) {
+                    finalDuration = gapToNext
+                } else {
+                    // Se o gap for muito grande, é uma parada real. Assumimos 1 min como padrão para o clipe sem duração.
+                    finalDuration = Duration.ofMinutes(1)
+                }
+            } else {
+                // É o último clipe e não tem duração. Nossa única opção é assumir 1 minuto.
+                finalDuration = Duration.ofMinutes(1)
+            }
+        }
+        clip.copy(duration = finalDuration)
+    }
+
+    // 3. Monta os segmentos contínuos
+    val segments = mutableListOf<RecordingSegment>()
+    if (refinedClips.isNotEmpty()) {
+        var currentSegmentClips = mutableListOf(refinedClips.first())
+
+        for (i in 1 until refinedClips.size) {
+            val prevClip = refinedClips[i - 1]
+            val currentClip = refinedClips[i]
+            val timeAfterPrevClip = prevClip.startTime.plus(prevClip.duration)
+            val gap = Duration.between(timeAfterPrevClip, currentClip.startTime)
+
+            if (gap.abs().seconds > MAX_GAP_SECONDS) {
+                segments.add(createSegment(currentSegmentClips))
+                currentSegmentClips = mutableListOf(currentClip)
+            } else {
+                currentSegmentClips.add(currentClip)
+            }
+        }
+        if (currentSegmentClips.isNotEmpty()) {
+            segments.add(createSegment(currentSegmentClips))
         }
     }
-    segments.add(createSegment(currentSegmentClips))
+
+
+    if (segments.isEmpty()) {
+        return@withContext Timeline(emptyList(), null, null, Duration.ZERO)
+    }
 
     val earliest = segments.first().startTime
     val latest = segments.last().endTime
-
-    // --- CORREÇÃO DO CRASH ---
-    // Calcula a duração total somando a duração de cada segmento.
     val totalDuration = segments.fold(Duration.ZERO) { acc, segment -> acc.plus(segment.duration) }
 
     return@withContext Timeline(segments, earliest, latest, totalDuration)

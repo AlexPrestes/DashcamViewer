@@ -12,7 +12,6 @@ import java.io.File
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 object VideoRepository {
@@ -23,15 +22,13 @@ object VideoRepository {
         "Normal/F",
         "Normal/I",
         "Event/F",
+
         "Event/I",
     )
 
-    // --- INÍCIO DA CORREÇÃO ---
-    // A função agora recebe o nome do volume (String) e se encarrega de encontrar a pasta.
     suspend fun loadVideosFrom(context: Context, volumeName: String): List<VideoFile> = withContext(Dispatchers.IO) {
         val root = findVolumeRoot(context, volumeName)
             ?: throw Exception("Volume '$volumeName' não encontrado. Verifique as permissões e o nome do volume.")
-        // --- FIM DA CORREÇÃO ---
 
         val videos = mutableListOf<VideoFile>()
 
@@ -49,10 +46,7 @@ object VideoRepository {
                     return@forEach
                 }
 
-                // Usaremos a duração real no futuro, por enquanto mantemos o placeholder
-                // val duration = getVideoDuration(context, file)
-                val duration = Duration.ofMinutes(1)
-
+                val duration = getVideoDuration(context, file)
                 val (localTimestamp, cameraType) = parsedInfo
                 val zonedDateTime = localTimestamp.atZone(ZoneId.systemDefault())
 
@@ -63,7 +57,7 @@ object VideoRepository {
                         timestamp = zonedDateTime,
                         cameraType = cameraType,
                         isEvent = isEvent,
-                        duration = duration // Adicionaremos este campo depois
+                        duration = duration
                     )
                 )
             }
@@ -72,39 +66,37 @@ object VideoRepository {
         return@withContext videos.sortedBy { it.timestamp }
     }
 
-    // --- INÍCIO DA NOVA FUNÇÃO AUXILIAR ---
     private fun findVolumeRoot(context: Context, volumeName: String): DocumentFile? {
         val externalDirs = context.getExternalFilesDirs(null)
         for (dir in externalDirs) {
             if (dir != null) {
-                // Sobe na árvore de diretórios para encontrar a raiz do volume.
                 var current: File? = dir
                 repeat(4) {
                     current = current?.parentFile
                 }
-                if (current?.name == volumeName) {
+                if (current?.name.equals(volumeName, ignoreCase = true)) {
                     return DocumentFile.fromFile(current!!)
                 }
             }
         }
-        return null // Retorna null se não encontrar
+        return null
     }
-    // --- FIM DA NOVA FUNÇÃO AUXILIAR ---
 
-    // (O resto do arquivo: getVideoDuration, parseFileName, findDirectory permanecem iguais)
     private fun getVideoDuration(context: Context, file: DocumentFile): Duration {
         val retriever = MediaMetadataRetriever()
         try {
             context.contentResolver.openFileDescriptor(file.uri, "r")?.use { pfd ->
                 retriever.setDataSource(pfd.fileDescriptor)
                 val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                return Duration.ofMillis(durationStr?.toLongOrNull() ?: 0L)
+                val durationMs = durationStr?.toLongOrNull() ?: 0L
+                return Duration.ofMillis(durationMs)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get duration for ${file.name}", e)
         } finally {
             retriever.release()
         }
+        // Se tudo falhar, retorna Duração Zero como um sinalizador.
         return Duration.ZERO
     }
 
