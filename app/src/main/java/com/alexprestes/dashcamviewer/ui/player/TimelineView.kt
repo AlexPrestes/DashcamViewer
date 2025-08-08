@@ -24,29 +24,26 @@ import com.alexprestes.dashcamviewer.domain.model.Timeline
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import kotlin.math.roundToLong
 
-// --- Constantes de Configuração da Timeline ---
 private val DpPerSecond = 8.dp
 private val TotalTimelineHeight = 100.dp
 private val SegmentsTrackHeight = 60.dp
-private val TimeMarkerTrackHeight = 40.dp
 private val MajorTickHeight = 12.dp
 private val MinorTickHeight = 6.dp
 
 @Composable
 fun TimelineView(
     timeline: Timeline,
-    currentAbsolutePosition: Long, // Posição em milissegundos desde o início da playlist
-    onSeek: (Long) -> Unit, // Ação de seek com a posição em milissegundos
+    currentAbsolutePosition: Long, // Posição em milissegundos desde o início da playlist do dia
+    onSeek: (Long) -> Unit, // Ação de seek com a posição da playlist do dia
     modifier: Modifier = Modifier
 ) {
     if (timeline.segments.isEmpty()) {
         Box(
-            modifier = modifier.height(TotalTimelineHeight),
+            modifier = modifier.height(TotalTimelineHeight).fillMaxWidth().background(Color.DarkGray),
             contentAlignment = Alignment.Center
         ) {
-            Text("Nenhuma gravação para esta data.")
+            Text("Nenhuma gravação para esta data.", color = Color.White)
         }
         return
     }
@@ -55,50 +52,44 @@ fun TimelineView(
     var containerWidthPx by remember { mutableStateOf(0f) }
     val pxPerSecond = with(density) { DpPerSecond.toPx() }
 
-    // Offset de scroll em pixels, controlado pelo gesto de arrastar
     var scrollOffsetPx by remember { mutableStateOf(0f) }
-
-    // O timestamp do início do dia, para referência de cálculo
     val dayStart = remember(timeline) {
         timeline.segments.first().startTime.toLocalDate().atStartOfDay()
     }
 
-    // O timestamp exato que está no centro da tela (para o seek)
     val centerTime = remember(scrollOffsetPx, containerWidthPx, dayStart, pxPerSecond) {
         val centerPx = scrollOffsetPx + (containerWidthPx / 2)
         val secondsFromStartOfDay = (centerPx / pxPerSecond).toLong()
         dayStart.plusSeconds(secondsFromStartOfDay)
     }
 
-    // Lógica para detectar quando o usuário para de arrastar e então chamar onSeek
     val scrollableState = rememberScrollableState { delta ->
-        scrollOffsetPx = (scrollOffsetPx - delta).coerceIn(0f, (Duration.ofDays(1).seconds * pxPerSecond) - containerWidthPx)
+        val totalWidthPx = Duration.ofDays(1).seconds * pxPerSecond
+        scrollOffsetPx = (scrollOffsetPx - delta).coerceIn(0f, totalWidthPx - containerWidthPx)
         delta
     }
+
     LaunchedEffect(scrollableState.isScrollInProgress) {
         if (!scrollableState.isScrollInProgress) {
-            // Converte a hora do dia para uma posição na playlist do ExoPlayer
             val seekPositionMs = timeToPlaylistPosition(timeline, centerTime)
             onSeek(seekPositionMs)
         }
     }
 
-    // Efeito para a timeline seguir o vídeo enquanto ele toca
     LaunchedEffect(currentAbsolutePosition) {
         if (!scrollableState.isScrollInProgress) {
             val positionInSeconds = playlistPositionToSecondsOfDay(timeline, currentAbsolutePosition)
             val targetScrollOffset = (positionInSeconds * pxPerSecond) - (containerWidthPx / 2)
-            scrollOffsetPx = targetScrollOffset.coerceIn(0f, (Duration.ofDays(1).seconds * pxPerSecond) - containerWidthPx)
+            val totalWidthPx = Duration.ofDays(1).seconds * pxPerSecond
+            scrollOffsetPx = targetScrollOffset.coerceIn(0f, totalWidthPx - containerWidthPx)
         }
     }
-
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(Color.DarkGray)
     ) {
-        // --- Texto Centralizado com a Hora Atual ---
         Text(
             text = centerTime.format(DateTimeFormatter.ofPattern("HH:mm:ss")),
             color = Color.White,
@@ -108,7 +99,6 @@ fun TimelineView(
                 .padding(4.dp)
         )
 
-        // --- Container Principal com a Agulha ---
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -116,7 +106,6 @@ fun TimelineView(
                 .scrollable(state = scrollableState, orientation = Orientation.Horizontal)
                 .onSizeChanged { containerWidthPx = it.width.toFloat() }
         ) {
-            // --- Desenho da Timeline (Segmentos e Marcadores) ---
             TimelineCanvas(
                 modifier = Modifier.fillMaxSize(),
                 timeline = timeline,
@@ -125,7 +114,6 @@ fun TimelineView(
                 dayStart = dayStart
             )
 
-            // --- Agulha Vermelha Fixa no Centro ---
             Spacer(
                 modifier = Modifier
                     .width(2.dp)
@@ -153,11 +141,17 @@ private fun TimelineCanvas(
         val visibleStartPx = scrollOffsetPx
         val visibleEndPx = scrollOffsetPx + size.width
 
+        // --- Desenha a base cinza da régua de 24h ---
+        drawRect(
+            color = Color.Gray,
+            topLeft = Offset(0f - scrollOffsetPx, 0f),
+            size = androidx.compose.ui.geometry.Size(totalDayDurationSeconds * pxPerSecond, SegmentsTrackHeight.toPx())
+        )
+
         // --- Desenha os Segmentos de Vídeo ---
         timeline.segments.forEach { segment ->
             val startSeconds = Duration.between(dayStart, segment.startTime).seconds
             val endSeconds = Duration.between(dayStart, segment.endTime).seconds
-
             val startPx = startSeconds * pxPerSecond
             val endPx = endSeconds * pxPerSecond
 
@@ -172,7 +166,7 @@ private fun TimelineCanvas(
 
         // --- Desenha os Marcadores de Tempo ---
         val hourInSeconds = 3600L
-        for (second in 0..totalDayDurationSeconds step 15 * 60) { // Marca a cada 15 minutos
+        for (second in 0..totalDayDurationSeconds step 15 * 60) {
             val currentPx = second * pxPerSecond
             if (currentPx >= visibleStartPx - 50 && currentPx <= visibleEndPx + 50) {
                 val isHourMark = second % hourInSeconds == 0L
@@ -195,27 +189,24 @@ private fun TimelineCanvas(
     }
 }
 
-
-// --- Funções Auxiliares de Conversão de Tempo ---
-
-// Converte um tempo absoluto do dia para a posição correspondente na playlist do ExoPlayer
 private fun timeToPlaylistPosition(timeline: Timeline, time: LocalDateTime): Long {
-    var positionMs = 0L
+    var accumulatedDurationMs = 0L
     for (segment in timeline.segments) {
-        if (time in segment.startTime..segment.endTime) {
-            positionMs += Duration.between(segment.startTime, time).toMillis()
-            return positionMs
+        if (time >= segment.startTime && time < segment.endTime) {
+            val positionInSegment = Duration.between(segment.startTime, time).toMillis()
+            return accumulatedDurationMs + positionInSegment
         }
-        positionMs += segment.duration.toMillis()
+        accumulatedDurationMs += segment.duration.toMillis()
     }
-    // Se não encontrar, retorna a última posição
-    return timeline.segments.sumOf { it.duration.toMillis() }
+    if (timeline.segments.isNotEmpty() && time < timeline.segments.first().startTime) {
+        return 0L
+    }
+    return accumulatedDurationMs
 }
 
-// Converte a posição da playlist do ExoPlayer para o segundo correspondente no dia
 private fun playlistPositionToSecondsOfDay(timeline: Timeline, positionMs: Long): Long {
     var accumulatedDurationMs = 0L
-    val dayStart = timeline.segments.firstOrNull()?.startTime?.toLocalDate()?.atStartOfDay() ?: return 0
+    val dayStart = timeline.segments.firstOrNull()?.startTime?.toLocalDate()?.atStartOfDay() ?: return 0L
 
     for (segment in timeline.segments) {
         val segmentDurationMs = segment.duration.toMillis()
@@ -226,5 +217,5 @@ private fun playlistPositionToSecondsOfDay(timeline: Timeline, positionMs: Long)
         }
         accumulatedDurationMs += segmentDurationMs
     }
-    return 0
+    return Duration.between(dayStart, timeline.segments.lastOrNull()?.endTime ?: dayStart).seconds
 }

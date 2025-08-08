@@ -1,7 +1,6 @@
 package com.alexprestes.dashcamviewer.ui.player
 
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,6 +17,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
@@ -106,9 +107,8 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
     var isMuted by remember { mutableStateOf(false) }
     val playbackSpeeds = listOf(0.5f, 1.0f, 2.0f)
     var currentSpeedIndex by remember { mutableStateOf(1) }
-    var currentPosition by remember { mutableStateOf(0L) }
 
-    // CORREÇÃO: Extrai vídeos apenas da timeline do dia selecionado
+    // Lista de vídeos para o dia selecionado, usada para cálculos de posição
     val frontVideos = remember(timeline) {
         timeline.segments.flatMap { it.clips }.map { it.frontVideo }
     }
@@ -119,11 +119,10 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
     val frontPlayer = remember { ExoPlayer.Builder(context).build() }
     val insidePlayer = remember { ExoPlayer.Builder(context).build() }
 
-    // CORREÇÃO: Recarrega os vídeos no player sempre que a timeline (a data) mudar
     LaunchedEffect(timeline) {
         frontPlayer.prepareWithVideos(frontVideos, context)
         insidePlayer.prepareWithVideos(insideVideos, context)
-        isPlaying = false // Pausa ao trocar de data
+        isPlaying = false
     }
 
     DisposableEffect(Unit) {
@@ -133,7 +132,47 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         }
     }
 
-    // Sincroniza players
+    // --- LÓGICA DE POSIÇÃO E SEEK CORRIGIDA ---
+    var absolutePosition by remember { mutableStateOf(0L) }
+
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            var basePosition = 0L
+            val currentWindowIndex = frontPlayer.currentMediaItemIndex
+
+            // Soma a duração REAL dos vídeos anteriores na playlist
+            for (i in 0 until currentWindowIndex) {
+                // Acessa a duração do objeto VideoFile, que agora deve ser precisa
+                basePosition += frontVideos.getOrNull(i)?.duration?.toMillis() ?: (60 * 1000L) // Fallback para 1 min
+            }
+            absolutePosition = basePosition + frontPlayer.currentPosition
+            delay(250) // Atualiza 4x por segundo
+        }
+    }
+
+    fun seekPlayers(playlistPosition: Long) {
+        var targetWindowIndex = 0
+        var accumulatedDuration = 0L
+        var positionInWindow = 0L
+
+        // Encontra em qual vídeo da playlist a posição desejada está, usando a duração real
+        for ((index, video) in frontVideos.withIndex()) {
+            val videoDuration = video.duration.toMillis()
+            if (playlistPosition < accumulatedDuration + videoDuration) {
+                targetWindowIndex = index
+                positionInWindow = playlistPosition - accumulatedDuration
+                break
+            }
+            accumulatedDuration += videoDuration
+        }
+
+        frontPlayer.seekTo(targetWindowIndex, positionInWindow)
+        insidePlayer.seekTo(targetWindowIndex, positionInWindow)
+        absolutePosition = playlistPosition
+    }
+
+    // --- FIM DA LÓGICA DE POSIÇÃO E SEEK ---
+
     LaunchedEffect(frontPlayer) {
         frontPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -143,40 +182,16 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         })
     }
 
-    // Controla o estado de mudo
     LaunchedEffect(isMuted) {
         val volume = if (isMuted) 0f else 1f
         frontPlayer.volume = volume
         insidePlayer.volume = volume
     }
 
-    // Controla a velocidade
     LaunchedEffect(currentSpeedIndex) {
         val speed = playbackSpeeds[currentSpeedIndex]
         frontPlayer.playbackParameters = PlaybackParameters(speed)
         insidePlayer.playbackParameters = PlaybackParameters(speed)
-    }
-
-    // Atualiza a posição da agulha
-    var absolutePosition by remember { mutableStateOf(0L) }
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            var basePosition = 0L
-            val currentWindowIndex = frontPlayer.currentMediaItemIndex
-            for (i in 0 until currentWindowIndex) {
-                // A duração está fixada em 1 minuto no TimelineBuilder, então usamos isso aqui.
-                // No futuro, podemos pegar a duração real de cada vídeo.
-                basePosition += 60 * 1000L
-            }
-            absolutePosition = basePosition + frontPlayer.currentPosition
-            delay(250) // Atualiza 4x por segundo
-        }
-    }
-
-    fun seekPlayers(position: Long) {
-        frontPlayer.seekTo(position)
-        insidePlayer.seekTo(position)
-        currentPosition = position
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -196,6 +211,7 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // ... (Botões de controle permanecem os mesmos)
             IconButton(onClick = { /* TODO */ }) {
                 Icon(Icons.Default.FiberManualRecord, contentDescription = "Record")
             }
@@ -231,6 +247,8 @@ private fun PlayerContent(timeline: Timeline, onCalendarClick: () -> Unit) {
         }
     }
 }
+
+// ... (O resto do arquivo PlayerScreen.kt, incluindo CalendarSheetContent, Day, etc., permanece o mesmo)
 
 @Composable
 private fun CalendarSheetContent(
@@ -282,7 +300,7 @@ private fun CalendarSheetContent(
 private fun Day(day: CalendarDay, isSelected: Boolean, isAvailable: Boolean, onClick: (CalendarDay) -> Unit) {
     Box(
         modifier = Modifier
-            .aspectRatio(1f) // Makes the box square
+            .aspectRatio(1f)
             .padding(4.dp)
             .background(
                 color = when {
@@ -313,7 +331,6 @@ private fun Day(day: CalendarDay, isSelected: Boolean, isAvailable: Boolean, onC
     }
 }
 
-
 @Composable
 private fun PlayerViewComposable(player: Player, modifier: Modifier = Modifier) {
     AndroidView(
@@ -337,8 +354,8 @@ private fun ExoPlayer.prepareWithVideos(videos: List<VideoFile>, context: Contex
 private class PlayerViewModelFactory(
     private val application: android.app.Application,
     private val volumeName: String?
-) : androidx.lifecycle.ViewModelProvider.Factory {
-    override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(PlayerViewModel::class.java)) {
             val savedStateHandle = SavedStateHandle(mapOf("volumeName" to volumeName))
             @Suppress("UNCHECKED_CAST")

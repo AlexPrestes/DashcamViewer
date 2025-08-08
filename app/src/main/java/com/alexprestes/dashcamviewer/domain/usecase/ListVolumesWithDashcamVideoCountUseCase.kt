@@ -2,8 +2,8 @@ package com.alexprestes.dashcamviewer.domain.usecase
 
 import android.content.Context
 import androidx.documentfile.provider.DocumentFile
+import com.alexprestes.dashcamviewer.data.repository.VideoRepository // Importe o repositório
 import com.alexprestes.dashcamviewer.domain.model.VolumeInfo
-import com.alexprestes.dashcamviewer.domain.model.buildTimeline
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -19,17 +19,23 @@ class ListVolumesWithDashcamVideoCountUseCase(private val context: Context) {
         val externalDirs = context.getExternalFilesDirs(null)
 
         for (dir in externalDirs) {
-            val volumeRoot = getVolumeRootFromAppDir(dir) ?: continue
-            val documentFile = DocumentFile.fromFile(volumeRoot)
-            val name = volumeRoot.name.takeIf { !it.isNullOrBlank() } ?: "External Storage"
+            try {
+                val volumeRoot = getVolumeRootFromAppDir(dir) ?: continue
+                val documentFile = DocumentFile.fromFile(volumeRoot)
+                val name = volumeRoot.name.takeIf { !it.isNullOrBlank() } ?: "External Storage"
 
-            // Chama a função suspend para construir a timeline.
-            val timeline = buildTimeline(context, documentFile)
-            val videoCount = timeline.segments.sumOf { it.clips.size }
+                // --- INÍCIO DA CORREÇÃO ---
+                // Usamos o VideoRepository para carregar os vídeos e depois contamos o tamanho da lista.
+                val videos = VideoRepository.loadVideosFrom(context, name)
+                val videoCount = videos.size
+                // --- FIM DA CORREÇÃO ---
 
-            // Cria a instância final com a contagem correta
-            if (videoCount > 0) {
-                volumes.add(VolumeInfo(documentFile, name, videoCount))
+                // Cria a instância final com a contagem correta
+                if (videoCount > 0) {
+                    volumes.add(VolumeInfo(documentFile, name, videoCount))
+                }
+            } catch (e: Exception) {
+                // Ignora volumes que não podem ser acessados (como a memória interna sem as pastas)
             }
         }
 
@@ -39,7 +45,6 @@ class ListVolumesWithDashcamVideoCountUseCase(private val context: Context) {
     private fun getVolumeRootFromAppDir(appDir: File?): File? {
         var current = appDir ?: return null
         // Navega para cima na árvore de diretórios para encontrar a raiz do volume.
-        // O número de vezes pode precisar de ajuste dependendo da versão do Android.
         repeat(4) {
             current = current.parentFile ?: return null
         }
