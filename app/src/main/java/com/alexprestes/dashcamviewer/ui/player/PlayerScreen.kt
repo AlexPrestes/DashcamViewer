@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +32,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,12 +44,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
-import com.alexprestes.dashcamviewer.model.RecordingSegment
-import com.alexprestes.dashcamviewer.model.Timeline
 import com.kizitonwose.calendar.compose.VerticalCalendar
 import com.kizitonwose.calendar.compose.rememberCalendarState
 import com.kizitonwose.calendar.core.firstDayOfWeekFromLocale
@@ -55,17 +56,37 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import com.alexprestes.dashcamviewer.domain.model.VideoFile
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlayerScreen(volumeName: String?) {
+fun PlayerScreen(
+    volumeName: String?,
+    playerViewModel: PlayerViewModel = viewModel()
+) {
+    val uiState by playerViewModel.uiState.collectAsState()
+
     val sheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
     var showBottomSheet by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        PlayerContent {
-            showBottomSheet = true
+        when (val state = uiState) {
+            is PlayerUiState.Loading -> {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            }
+            is PlayerUiState.Error -> {
+                Text(
+                    text = state.message,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+            is PlayerUiState.Success -> {
+                PlayerContent(
+                    timeline = state.timeline,
+                    onCalendarClick = { showBottomSheet = true }
+                )
+            }
         }
 
         if (showBottomSheet) {
@@ -87,8 +108,15 @@ fun PlayerScreen(volumeName: String?) {
     }
 }
 
+private fun ExoPlayer.prepareWithVideos(videos: List<VideoFile>, context: android.content.Context) {
+    if (videos.isEmpty()) return
+    val mediaItems = videos.map { MediaItem.fromUri(it.uri) }
+    setMediaItems(mediaItems)
+    prepare()
+}
+
 @Composable
-fun PlayerContent(onCalendarClick: () -> Unit) {
+fun PlayerContent(timeline: com.alexprestes.dashcamviewer.domain.model.Timeline, onCalendarClick: () -> Unit) {
     val context = LocalContext.current
 
     var isPlaying by remember { mutableStateOf(false) }
@@ -97,18 +125,23 @@ fun PlayerContent(onCalendarClick: () -> Unit) {
     var currentSpeedIndex by remember { mutableStateOf(1) }
     var currentPosition by remember { mutableStateOf(0L) }
 
-    val frontPlayer = remember { ExoPlayer.Builder(context).build() }
-    val insidePlayer = remember { ExoPlayer.Builder(context).build() }
+    val frontVideos = remember(timeline) {
+        timeline.segments.flatMap { it.clips }.map { it.frontVideo }
+    }
+    val insideVideos = remember(timeline) {
+        timeline.segments.flatMap { it.clips }.mapNotNull { it.rearVideo }
+    }
 
-    // Sample timeline for demonstration
-    val sampleTimeline = remember {
-        Timeline(
-            segments = listOf(
-                RecordingSegment(0, 60000, false, "front1.mp4", "inside1.mp4"),
-                RecordingSegment(65000, 125000, true, "front2.mp4", "inside2.mp4"),
-                RecordingSegment(130000, 190000, false, "front3.mp4", "inside3.mp4")
-            )
-        )
+    val frontPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            prepareWithVideos(frontVideos, context)
+        }
+    }
+
+    val insidePlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            prepareWithVideos(insideVideos, context)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -168,7 +201,7 @@ fun PlayerContent(onCalendarClick: () -> Unit) {
             )
         }
         TimelineView(
-            timeline = sampleTimeline,
+            timeline = timeline,
             currentPosition = currentPosition,
             onSeek = ::seekPlayers,
             modifier = Modifier

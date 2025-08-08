@@ -34,12 +34,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import com.alexprestes.dashcamviewer.model.Timeline
+import kotlin.collections.forEachIndexed
 import kotlin.math.roundToLong
 
 @Composable
 fun TimelineView(
-    timeline: Timeline,
+    timeline: com.alexprestes.dashcamviewer.domain.model.Timeline,
     currentPosition: Long,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
